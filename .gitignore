@@ -1,5 +1,10 @@
 # Build output
 build/
+
+# Release packaging staging — the zip is published as a GitHub release asset,
+# deliberately not committed (binaries in git history cannot be removed later
+# without rewriting history).
+dist/
 *.exe
 *.obj
 *.o
