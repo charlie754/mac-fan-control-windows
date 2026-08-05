@@ -9,15 +9,7 @@ temperature curve.
 Built and verified on a **MacBook Pro 15" 2017 with Touch Bar (MacBookPro14,3)**
 running Windows 10 x64.
 
-![screenshot](docs/screenshot.png)
-
-### Demo
-
-https://github.com/charlie754/mac-fan-control-windows/raw/main/docs/demo.mp4
-
-<video src="https://github.com/charlie754/mac-fan-control-windows/raw/main/docs/demo.mp4" controls width="100%"></video>
-
-[▶ Download / open the demo clip](docs/demo.mp4) (24 s)
+![demo](docs/demo.gif)
 
 ---
 
