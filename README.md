@@ -203,6 +203,12 @@ fan control logic.
 
 ---
 
+## Licence
+
+[MIT](LICENSE) — Copyright (c) 2026 IRP_HongKong. Use it, modify it, ship it in
+closed-source products; just keep the copyright notice. No warranty: this
+software writes to a hardware fan controller, and you run it at your own risk.
+
 ## Layout
 
 ```
