@@ -46,13 +46,14 @@ model-agnostic by construction. How much of that is *tested* is another matter:
 
 | Tier | Machines | Expectation |
 |---|---|---|
-| **Verified** | MacBookPro14,3 (15" 2017 Touch Bar) | The only machine actually tested. Full monitoring + control. |
+| **Verified** | MacBookPro14,3 (15" 2017 Touch Bar) | Developed and tested on this machine. Full monitoring + control. |
+| **Reported working** | MacBookPro15,1 (15" 2018/2019, 8-core i9, Apple T2) | Confirmed by a user in [#1](https://github.com/charlie754/mac-fan-control-windows/issues/1): both fans driven in curve mode, all eight CPU cores enumerated. Fans fell back to generic "Fan 1 / Fan 2" names, and a few sensors show generated names. |
 | **Expected to work** | Intel Macs ~2008–2017 — MacBook Pro / Air, iMac, Mac mini, Mac Pro | Same SMC generation: `fpe2` fan keys and the `FS!` bitmask, both exercised here. Many sensor keys are already in the catalogue; unrecognised ones still appear with generated names. |
-| **Untested code path** | T2 Intel Macs, 2018–2020 (MBP/MBA 2018+, Mac mini 2018, iMac Pro, Mac Pro 2019) | The SMC moved into the T2 and fan keys are often `flt` rather than `fpe2`, and some models use per-fan `F<N>Md` instead of `FS!`. Both are implemented and branch off what the hardware declares — but neither has been run against real T2 hardware. |
+| **Likely to work** | Other T2 Intel Macs, 2018–2020 (MBA 2018+, Mac mini 2018, iMac Pro, Mac Pro 2019) | The SMC moved into the T2, and some models report fan keys as `flt` rather than `fpe2` or use per-fan `F<N>Md` instead of `FS!`. Both paths are implemented and branch off what the hardware declares. One T2 model is now confirmed; the rest of the family is untested. |
 | **Monitoring only** | Fanless Intel Macs (12" MacBook Retina, 2015–2017) | `FNum` = 0, so there is nothing to control. Temperatures still display. |
 | **Will not work** | Apple Silicon — M1/M2/M3/M4 | No Boot Camp, no native Windows. Nothing to run against. |
 
-On an untested model the failure mode is designed to be *safe, not silent*: if
+Only the two models above have been run for real. On any other model the failure mode is designed to be *safe, not silent*: if
 the fan limits can't be read the fan is refused rather than driven with a
 guessed range, and if no temperature is usable a curve hands the fan back to the
 firmware instead of holding a stale speed.

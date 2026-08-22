@@ -30,6 +30,8 @@ const wchar_t* categoryUnit(Category c) {
 // ---- catalogue ------------------------------------------------------------
 //
 // Entries flagged "[observed]" were present in the live MacBookPro14,3 dump.
+// Entries flagged "[MBP15,1]" come from a single user report on a T2 MacBookPro15,1
+// (issue #1); their names are inferred from Apple's naming convention, not confirmed.
 
 struct Entry { const char* key; const wchar_t* name; Category cat; bool noteworthy; };
 
@@ -53,6 +55,8 @@ static const Entry kCatalogue[] = {
     {"TCSA", L"CPU system agent",              Category::Temperature, true },  // [observed]
     {"TCTD", L"CPU die margin to Tj max",      Category::Temperature, false},  // [observed] delta, not absolute
     {"TCMc", L"CPU core max (unused)",         Category::Temperature, false},  // [observed] reads -128 sentinel
+    {"TCMX", L"CPU core maximum",              Category::Temperature, true },  // [MBP15,1] reads above the
+                                                                               // individual cores; a max
     {"TCFC", L"CPU core count",                Category::Other,       false},  // [observed] ui16 count, not a temp
 
     // --- GPU temperatures --------------------------------------------------
@@ -60,6 +64,7 @@ static const Entry kCatalogue[] = {
     {"TG0P", L"GPU proximity",                 Category::Temperature, true },  // [observed]
     {"TG0F", L"GPU alt. F",                    Category::Temperature, false},  // [observed]
     {"TGDD", L"Discrete GPU die",              Category::Temperature, true },  // [observed]
+    {"TGDF", L"Discrete GPU alt. F",           Category::Temperature, false},  // [MBP15,1] mirrors TG0F
     {"TGVP", L"GPU VRM proximity",             Category::Temperature, true },  // [observed]
     {"TG1D", L"GPU 1 die",                     Category::Temperature, true },
 
@@ -86,6 +91,8 @@ static const Entry kCatalogue[] = {
     {"TA0V", L"Ambient (virtual)",             Category::Temperature, true },  // [observed]
     {"TA1P", L"Ambient air 2",                 Category::Temperature, true },
     {"TM0P", L"Memory proximity",              Category::Temperature, true },  // [observed]
+    {"Tm0P", L"Memory proximity 2",            Category::Temperature, false},  // [MBP15,1] distinct from TM0P;
+                                                                               // meaning inferred, unconfirmed
     {"TPCD", L"Platform controller hub die",   Category::Temperature, true },  // [observed]
     {"TW0P", L"Airport / Wi-Fi proximity",     Category::Temperature, true },  // [observed]
     {"Th1H", L"Heatpipe 1",                    Category::Temperature, true },  // [observed]
