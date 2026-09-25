@@ -87,7 +87,29 @@ struct Value {
 // if the type is not encodable.
 uint32_t encode(Key type, double v, uint8_t* out, uint32_t outCap);
 
-// ---- device ---------------------------------------------------------------
+// ---- connection diagnosis -------------------------------------------------
+//
+// Why a connection attempt failed, so the UI can offer a specific next step
+// instead of a dead end. The difference between "no driver registered at all"
+// and "registered but not running" matters: only the second is something the
+// app can resolve by itself.
+
+enum class Status {
+    Connected,
+    NoDriver,        // no "AppleSMC" service exists in the SCM database
+    ServiceStopped,  // service exists but is not running and we could not start it
+    DeviceBusy,      // another process already holds the device
+    OtherError,
+};
+
+struct ServiceState {
+    bool registered = false;
+    bool running    = false;
+};
+
+// Queries the SCM for the "AppleSMC" service. Needs no elevation: it opens
+// the SCM with SC_MANAGER_CONNECT and the service with SERVICE_QUERY_STATUS.
+ServiceState queryAppleSmcService();
 
 class Device {
 public:
@@ -103,6 +125,7 @@ public:
     bool isOpen() const { return h_ != INVALID_HANDLE_VALUE; }
 
     const std::wstring& error() const { return err_; }
+    Status status() const { return status_; }          // why the last open() failed
     uint8_t protocol() const { return proto_; }        // 1 = mmio, else pmio
     const wchar_t* protocolName() const { return proto_ == 1 ? L"mmio" : L"pmio"; }
 
@@ -126,6 +149,7 @@ private:
 
     HANDLE       h_ = INVALID_HANDLE_VALUE;
     uint8_t      proto_ = 0;
+    Status       status_ = Status::OtherError;
     std::wstring err_;
 };
 

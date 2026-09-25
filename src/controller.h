@@ -54,6 +54,7 @@ struct FanState {
 struct Snapshot {
     bool          connected = false;
     bool          controllable = false;
+    smc::Status   statusCode = smc::Status::OtherError;  // why, when not connected
     std::wstring  status;
     std::wstring  protocolName;
     std::vector<SensorReading> sensors;   // temperatures first, then the rest
@@ -67,8 +68,13 @@ class Controller {
 public:
     ~Controller();
 
-    // Opens the device, enumerates sensors and fans, starts the worker thread.
+    // Starts the worker thread. Always succeeds: if the SMC is unreachable the
+    // controller comes up disconnected and keeps retrying in the background,
+    // so the app is never left unusable.
     bool start();
+
+    // Cuts the retry backoff short after the user asks to try again.
+    void retryNow() { retryNow_.store(true); }
 
     // Restores automatic fan control and closes the device. Idempotent.
     void stop();
@@ -97,6 +103,8 @@ public:
 
 private:
     void workerLoop();
+    bool attachLocked();          // open + enumerate; caller holds mtx_
+    void applyPendingLocked();    // apply held settings once fans are known
     void pollOnce();
     double curveInput(const std::string& sensorKey) const;
     void applyControl(double dtSec);
@@ -115,11 +123,13 @@ private:
     std::wstring        hottestName_;
 
     std::vector<FanConfig> cfg_;
+    std::vector<FanConfig> pending_;      // saved settings awaiting a connection
     std::vector<curve::Smoother> smooth_;
     std::vector<double> curveOut_;
     Snapshot           snap_;
     std::atomic<bool>  running_{false};
     std::atomic<bool>  reapply_{false};
+    std::atomic<bool>  retryNow_{false};
     std::thread        worker_;
     unsigned           polls_ = 0;
 };

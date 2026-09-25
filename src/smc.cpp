@@ -151,6 +151,20 @@ static std::wstring lastErrorText(const wchar_t* what, DWORD e) {
     return buf;
 }
 
+ServiceState queryAppleSmcService() {
+    ServiceState s;
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm) return s;
+    if (SC_HANDLE svc = OpenServiceW(scm, L"AppleSMC", SERVICE_QUERY_STATUS)) {
+        s.registered = true;
+        SERVICE_STATUS st{};
+        if (QueryServiceStatus(svc, &st)) s.running = (st.dwCurrentState == SERVICE_RUNNING);
+        CloseServiceHandle(svc);
+    }
+    CloseServiceHandle(scm);
+    return s;
+}
+
 bool Device::ensureServiceRunning() {
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!scm) return false;
@@ -190,26 +204,35 @@ bool Device::open() {
             // Driver present but service stopped: try to start it, then retry.
             if (ensureServiceRunning()) continue;
         }
-        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
-            err_ = L"The AppleSMC driver is not installed or its service is stopped.\n\n"
-                   L"MacFanCtl requires the \"AppleSMC\" kernel service. Install the SMC "
-                   L"driver that provides it, or start the service, then try again.";
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) {
+            // Separate "nothing is registered" from "registered but not running":
+            // only the latter is something the app can resolve on its own.
+            const ServiceState svc = queryAppleSmcService();
+            status_ = svc.registered ? Status::ServiceStopped : Status::NoDriver;
+            err_ = svc.registered
+                 ? L"The SMC service is installed but not running, and MacFanCtl could "
+                   L"not start it. Starting it needs administrator rights."
+                 : L"No SMC driver is set up on this PC, so MacFanCtl has nothing to talk to.";
+        }
         else if (e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION)
             // The driver hands out a single handle at a time, so this almost
             // always means another SMC tool already has the device open.
-            err_ = L"\\\\.\\APPLESMC is already in use.\n\n"
-                   L"The driver allows only one program to hold the SMC device at a time. "
-                   L"Close any other SMC utility (tray icon included) or MacFanCtl "
-                   L"window, then try again.\n\n"
-                   L"If nothing else is running, try starting MacFanCtl as Administrator.";
-        else
+        {
+            status_ = Status::DeviceBusy;
+            err_ = L"Another program is already using the SMC. Only one program can "
+                   L"use it at a time.";
+        }
+        else {
+            status_ = Status::OtherError;
             err_ = lastErrorText(L"CreateFile(\\\\.\\APPLESMC)", e);
+        }
         return false;
     }
 
     DWORD ret = 0;
     if (!DeviceIoControl(h_, IOCTL_SMC_GET_PROTOCOL, nullptr, 0, &proto_, 1, &ret, nullptr))
         proto_ = 0;
+    status_ = Status::Connected;
     return true;
 }
 

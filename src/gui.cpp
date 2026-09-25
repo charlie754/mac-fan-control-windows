@@ -5,6 +5,7 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <cstdio>
 #include <algorithm>
@@ -29,6 +30,12 @@ constexpr int IDC_LIST      = 1000;
 constexpr int IDC_STATUS    = 1001;
 constexpr int IDC_KOFI      = 1002;
 
+// "Not connected" notice, shown instead of the sensor list and fan panels.
+constexpr int IDC_NC_TITLE  = 1010;
+constexpr int IDC_NC_BODY   = 1011;
+constexpr int IDC_NC_FIX    = 1012;   // primary action; label depends on the cause
+constexpr int IDC_NC_RETRY  = 1013;
+
 constexpr int FAN_STRIDE    = 20;
 constexpr int IDC_FAN_BASE  = 2000;
 enum FanCtl {
@@ -49,6 +56,7 @@ constexpr int  IDM_SHOW     = 40001;
 constexpr int  IDM_ALLAUTO  = 40002;
 constexpr int  IDM_EXIT     = 40003;
 constexpr int  IDT_POLL     = 1;
+constexpr int  IDT_RETRY_LABEL = 2;
 
 // ---- app state ------------------------------------------------------------
 
@@ -70,6 +78,9 @@ struct Ui {
     size_t    fanCount = 0;
     bool      inTray = false;
     bool      quitting = false;
+    bool      panelsBuilt = false;   // fan panels are built on first connect
+    bool      showingNotice = false;
+    HANDLE    instanceMutex = nullptr;
     std::vector<std::pair<std::string, std::wstring>> tempChoices;
 };
 
@@ -174,6 +185,53 @@ void trayUpdateTip() {
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
+// ---- "not connected" notice ----------------------------------------------
+//
+// Written for someone who has never heard of a kernel driver. Each cause gets
+// a concrete next step rather than a dead end, and the app keeps retrying in
+// the background so a fix applied outside the app is picked up on its own.
+
+struct Notice {
+    const wchar_t* title;
+    const wchar_t* body;
+    const wchar_t* fixLabel;   // nullptr = no primary action for this cause
+};
+
+Notice noticeFor(smc::Status s) {
+    switch (s) {
+        case smc::Status::ServiceStopped:
+            return {L"MacFanCtl just needs permission",
+                    L"The part of Windows that reads your Mac's fans is installed but "
+                    L"switched off, and starting it needs administrator permission.\n\n"
+                    L"Click the button below and choose \"Yes\" when Windows asks. "
+                    L"MacFanCtl will restart and connect by itself.",
+                    L"Fix this for me"};
+
+        case smc::Status::DeviceBusy:
+            return {L"Another program is using the fans",
+                    L"Only one program can control your Mac's fans at a time, and "
+                    L"something else has them right now.\n\n"
+                    L"Close the other fan or temperature app - including its icon near "
+                    L"the clock, bottom-right - and MacFanCtl will connect on its own "
+                    L"within a few seconds.",
+                    L"Show me what's using it"};
+
+        case smc::Status::NoDriver:
+            return {L"MacFanCtl can't reach your Mac's fans",
+                    L"Reading fans and temperatures on a Mac needs a small Windows "
+                    L"driver, and this PC doesn't have one set up yet.\n\n"
+                    L"MacFanCtl doesn't include that driver, so it can't install it for "
+                    L"you. The setup steps are on the project page.",
+                    L"Open setup instructions"};
+
+        default:
+            return {L"MacFanCtl can't reach your Mac's fans",
+                    L"Something went wrong talking to your Mac's fan controller.\n\n"
+                    L"The exact error is shown along the bottom of this window.",
+                    nullptr};
+    }
+}
+
 // ---- layout ---------------------------------------------------------------
 
 constexpr int kListW  = 400;
@@ -195,6 +253,29 @@ void layout() {
     MoveWindow(g.list, margin, margin, listW, bodyH - 2 * margin, TRUE);
     MoveWindow(g.status, margin, bodyH + (S(kStatusH) - S(24)) / 2, W - kofiW - 3 * margin, S(24), TRUE);
     if (g.kofi) MoveWindow(g.kofi, W - kofiW - margin, bodyH + (S(kStatusH) - kofiH) / 2, kofiW, kofiH, TRUE);
+
+    if (g.showingNotice) {
+        // Centred column across the whole client area.
+        const int w  = std::min(W - 4 * margin, S(620));
+        const int x  = (W - w) / 2;
+        const int bh = S(34);
+        int y = std::max(margin, (bodyH - S(300)) / 2);
+        auto mv = [&](int id, int h, int cx = -1, int cw = -1) {
+            if (HWND c = GetDlgItem(g.main, id))
+                MoveWindow(c, cx < 0 ? x : cx, y, cw < 0 ? w : cw, h, TRUE);
+            y += h;
+        };
+        mv(IDC_NC_TITLE, S(40));
+        y += S(8);
+        mv(IDC_NC_BODY, S(150));
+        y += S(14);
+        const int bw = S(190), gap = S(12);
+        if (HWND fix = GetDlgItem(g.main, IDC_NC_FIX))
+            MoveWindow(fix, x, y, bw, bh, TRUE);
+        if (HWND rty = GetDlgItem(g.main, IDC_NC_RETRY))
+            MoveWindow(rty, x + bw + gap, y, S(130), bh, TRUE);
+        return;
+    }
 
     if (g.fanCount == 0) return;
     const int fx = margin * 2 + listW;
@@ -274,11 +355,92 @@ void syncFanEnabled(size_t i, FanMode m) {
     EnableWindow(GetDlgItem(g.main, fanId(i, F_CURVE)),     m == FanMode::Curve);
 }
 
+// ---- connect / disconnect transitions -------------------------------------
+
+// Builds the fan panels the first time a connection succeeds. The app can now
+// open before the SMC is reachable, so this cannot happen at startup.
+void buildFanPanels() {
+    if (g.panelsBuilt || !g.ctl) return;
+    g.snap = g.ctl->snapshot();
+    g.fanCount = g.snap.fans.size();
+    if (g.fanCount == 0) return;
+
+    g.tempChoices = g.ctl->temperatureChoices();
+    for (size_t i = 0; i < g.fanCount; ++i) {
+        const FanState& f = g.snap.fans[i];
+        createFanPanel(i, f);
+        syncFanEnabled(i, f.mode);
+        if (!f.sensorKey.empty()) {
+            for (size_t j = 0; j < g.tempChoices.size(); ++j)
+                if (g.tempChoices[j].first == f.sensorKey)
+                    SendDlgItemMessageW(g.main, fanId(i, F_SRC_COMBO), CB_SETCURSEL, j, 0);
+        }
+    }
+    if (!g.snap.controllable) {
+        for (size_t i = 0; i < g.fanCount; ++i) {
+            EnableWindow(GetDlgItem(g.main, fanId(i, F_RADIO_MAN)), FALSE);
+            EnableWindow(GetDlgItem(g.main, fanId(i, F_RADIO_CRV)), FALSE);
+        }
+    }
+    g.panelsBuilt = true;
+    // The panels were created at a placeholder size. When the very first poll
+    // is already connected there is no notice transition to trigger a layout.
+    layout();
+}
+
+void setNoticeVisible(bool show, smc::Status st) {
+    static smc::Status shownFor = smc::Status::Connected;
+    const bool changed = (show != g.showingNotice) || (show && st != shownFor);
+    if (!changed) return;
+    g.showingNotice = show;
+    shownFor = st;
+
+    const int sw = show ? SW_SHOW : SW_HIDE;
+    for (int id : {IDC_NC_TITLE, IDC_NC_BODY, IDC_NC_FIX, IDC_NC_RETRY})
+        if (HWND c = GetDlgItem(g.main, id)) ShowWindow(c, sw);
+
+    // Everything that only makes sense while connected.
+    ShowWindow(g.list, show ? SW_HIDE : SW_SHOW);
+    for (size_t i = 0; i < g.fanCount; ++i)
+        for (int c = F_GROUP; c <= F_CURVE; ++c)
+            if (HWND h = GetDlgItem(g.main, fanId(i, (FanCtl)c)))
+                ShowWindow(h, show ? SW_HIDE : SW_SHOW);
+
+    if (show) {
+        const Notice n = noticeFor(st);
+        SetDlgItemTextW(g.main, IDC_NC_TITLE, n.title);
+        SetDlgItemTextW(g.main, IDC_NC_BODY, n.body);
+        SetDlgItemTextW(g.main, IDC_NC_RETRY, L"Try again now");
+        if (HWND fix = GetDlgItem(g.main, IDC_NC_FIX)) {
+            if (n.fixLabel) {
+                SetWindowTextW(fix, n.fixLabel);
+                ShowWindow(fix, SW_SHOW);
+            } else {
+                ShowWindow(fix, SW_HIDE);
+            }
+        }
+    }
+    layout();
+    InvalidateRect(g.main, nullptr, TRUE);
+}
+
 // ---- refresh --------------------------------------------------------------
 
 void refresh() {
     if (!g.ctl) return;
     g.snap = g.ctl->snapshot();
+
+    if (!g.snap.connected) {
+        // The controller keeps retrying on its own; just reflect the state.
+        setNoticeVisible(true, g.snap.statusCode);
+        SetWindowTextW(g.status, (L"  " + g.snap.status).c_str());
+        trayUpdateTip();
+        return;
+    }
+
+    // Connected: build the panels on the first successful attach, then reveal.
+    buildFanPanels();
+    setNoticeVisible(false, smc::Status::Connected);
 
     ListView_SetItemCountEx(g.list, (int)g.snap.sensors.size(), LVSICF_NOSCROLL);
     InvalidateRect(g.list, nullptr, FALSE);
@@ -388,6 +550,93 @@ void allSystem() {
     persist();
 }
 
+// ---- "not connected" actions ----------------------------------------------
+
+// Restarts MacFanCtl through the standard Windows permission prompt so it can
+// start the already-installed service. The single-instance guard and the SMC
+// handle are released first, or the new copy would bounce off our own guard.
+void relaunchElevated() {
+    wchar_t path[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return;
+
+    if (g.ctl) g.ctl->stop();
+    if (g.instanceMutex) { CloseHandle(g.instanceMutex); g.instanceMutex = nullptr; }
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof sei;
+    sei.lpVerb = L"runas";
+    sei.lpFile = path;
+    sei.nShow  = SW_SHOWNORMAL;
+
+    if (ShellExecuteExW(&sei)) {
+        if (sei.hProcess) CloseHandle(sei.hProcess);
+        g.quitting = true;
+        DestroyWindow(g.main);
+        return;
+    }
+    // Prompt declined or failed: stay running unelevated rather than dying.
+    g.instanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\MacFanCtlSingleInstance");
+    if (g.ctl) g.ctl->start();
+}
+
+// Windows won't tell us who holds a device handle without a driver of our own,
+// so name the fan/monitoring tools that are actually running right now.
+void showBusyHolders() {
+    static const wchar_t* kKnown[] = {
+        L"MacsFanControl", L"smcFanControl", L"TGPro", L"TG Pro", L"HWMonitor",
+        L"OpenHardwareMonitor", L"LibreHardwareMonitor", L"SpeedFan", L"MacFanCtl",
+    };
+    std::wstring found;
+    const DWORD self = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof pe;
+        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+            if (pe.th32ProcessID == self) continue;
+            std::wstring name = pe.szExeFile;
+            for (const wchar_t* k : kKnown) {
+                if (_wcsnicmp(name.c_str(), k, wcslen(k)) == 0) {
+                    if (found.find(name) == std::wstring::npos)
+                        found += L"    \x2022  " + name + L"\n";
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+
+    std::wstring msg;
+    if (found.empty()) {
+        msg = L"MacFanCtl couldn't spot a program it recognises.\n\n"
+              L"Look for a fan or temperature app's icon near the clock, "
+              L"bottom-right of your screen - you may need to click the small "
+              L"arrow to see hidden icons. Right-click it and choose Quit or Exit.\n\n"
+              L"MacFanCtl will connect on its own once it lets go.";
+    } else {
+        msg = L"These programs are running and may be using your Mac's fans:\n\n" +
+              found +
+              L"\nClose them - including any icon near the clock, bottom-right - "
+              L"and MacFanCtl will connect on its own within a few seconds.";
+    }
+    MessageBoxW(g.main, msg.c_str(), L"What's using the fans", MB_ICONINFORMATION | MB_OK);
+}
+
+void openSetupInstructions() {
+    ShellExecuteW(g.main, L"open",
+                  L"https://github.com/charlie754/mac-fan-control-windows#requirements",
+                  nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void onFixClicked() {
+    switch (g.snap.statusCode) {
+        case smc::Status::ServiceStopped: relaunchElevated();       break;
+        case smc::Status::DeviceBusy:     showBusyHolders();        break;
+        case smc::Status::NoDriver:       openSetupInstructions();  break;
+        default: break;
+    }
+}
+
 void showTrayMenu() {
     POINT p;
     GetCursorPos(&p);
@@ -435,6 +684,18 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g.kofi = CreateWindowExW(0, ui::kKofiClass, L"",
                 WS_CHILD | WS_VISIBLE,
                 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_KOFI, g.inst, nullptr);
+
+            // "Not connected" notice: created hidden, shown only when needed.
+            auto nc = [&](int id, const wchar_t* cls, DWORD style, HFONT f) {
+                HWND c = CreateWindowExW(0, cls, L"", WS_CHILD | style,
+                                         0, 0, 10, 10, hwnd,
+                                         (HMENU)(INT_PTR)id, g.inst, nullptr);
+                setFont(c, f);
+            };
+            nc(IDC_NC_TITLE, L"STATIC", SS_LEFT,                  g.fontBig);
+            nc(IDC_NC_BODY,  L"STATIC", SS_LEFT | SS_EDITCONTROL, g.font);
+            nc(IDC_NC_FIX,   L"BUTTON", BS_DEFPUSHBUTTON,         g.font);
+            nc(IDC_NC_RETRY, L"BUTTON", BS_PUSHBUTTON,            g.font);
             return 0;
         }
 
@@ -461,6 +722,11 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         setFont(h, c == F_RPM ? g.fontBig
                                   : c == F_NAME ? g.fontBold : g.font);
             }
+            // The notice controls exist from startup, connected or not, and
+            // would otherwise keep the fonts rebuildFonts() just deleted.
+            setFont(GetDlgItem(hwnd, IDC_NC_TITLE), g.fontBig);
+            for (int id : {IDC_NC_BODY, IDC_NC_FIX, IDC_NC_RETRY})
+                setFont(GetDlgItem(hwnd, id), g.font);
             ListView_SetColumnWidth(g.list, 0, S(210));
             ListView_SetColumnWidth(g.list, 1, S(60));
             ListView_SetColumnWidth(g.list, 2, S(90));
@@ -474,6 +740,10 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_TIMER:
             if (wp == IDT_POLL) refresh();
+            if (wp == IDT_RETRY_LABEL) {
+                KillTimer(hwnd, IDT_RETRY_LABEL);
+                SetDlgItemTextW(hwnd, IDC_NC_RETRY, L"Try again now");
+            }
             return 0;
 
         case WM_NOTIFY: {
@@ -513,6 +783,15 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == IDM_ALLAUTO) { allSystem(); return 0; }
+            if (id == IDC_NC_FIX)   { onFixClicked(); return 0; }
+            if (id == IDC_NC_RETRY) {
+                SetDlgItemTextW(hwnd, IDC_NC_RETRY, L"Checking…");
+                if (g.ctl) g.ctl->retryNow();
+                // If the attempt fails for the same reason the notice doesn't
+                // change, so nothing else would put the label back.
+                SetTimer(hwnd, IDT_RETRY_LABEL, 2000, nullptr);
+                return 0;
+            }
             if (id == IDM_EXIT)    { g.quitting = true; DestroyWindow(hwnd); return 0; }
 
             size_t fan; FanCtl c;
@@ -578,7 +857,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     // copy of the app could never connect. Surface that clearly rather than
     // letting it fail at CreateFile.
     HANDLE once = CreateMutexW(nullptr, TRUE, L"Local\\MacFanCtlSingleInstance");
-    if (once && GetLastError() == ERROR_ALREADY_EXISTS) {
+    const DWORD onceErr = GetLastError();
+    g.instanceMutex = once;   // released early if we relaunch with admin rights
+    // ERROR_ACCESS_DENIED: a copy restarted as administrator by "Fix this for
+    // me" owns the mutex and we may not open it. That copy is still running.
+    if ((once && onceErr == ERROR_ALREADY_EXISTS) || (!once && onceErr == ERROR_ACCESS_DENIED)) {
         if (HWND prev = FindWindowW(L"MacFanCtlMain", nullptr)) {
             ShowWindow(prev, SW_SHOW);
             SetForegroundWindow(prev);
@@ -615,36 +898,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     Controller ctl;
     g.ctl = &ctl;
 
-    if (!ctl.start()) {
-        MessageBoxW(hwnd, ctl.snapshot().status.c_str(),
-                    L"MacFanCtl — cannot reach the SMC", MB_ICONERROR | MB_OK);
-        return 2;
-    }
+    // Never a dead end: if the SMC is unreachable the window still opens,
+    // explains why, and the controller keeps retrying in the background.
+    ctl.start();
 
-    // Restore saved settings before building the UI so the controls come up
-    // reflecting them.
+    // Hand over saved settings now; if we are not connected yet the controller
+    // holds them and applies them once the fans are known.
     if (auto saved = loadConfig(); !saved.empty()) ctl.applyConfigs(saved);
-
-    g.snap = ctl.snapshot();
-    g.fanCount = g.snap.fans.size();
-    g.tempChoices = ctl.temperatureChoices();
-
-    for (size_t i = 0; i < g.fanCount; ++i) {
-        createFanPanel(i, g.snap.fans[i]);
-        const FanState& f = g.snap.fans[i];
-        syncFanEnabled(i, f.mode);
-        if (!f.sensorKey.empty()) {
-            for (size_t j = 0; j < g.tempChoices.size(); ++j)
-                if (g.tempChoices[j].first == f.sensorKey)
-                    SendDlgItemMessageW(hwnd, fanId(i, F_SRC_COMBO), CB_SETCURSEL, j, 0);
-        }
-    }
-    if (!g.snap.controllable) {
-        for (size_t i = 0; i < g.fanCount; ++i) {
-            EnableWindow(GetDlgItem(hwnd, fanId(i, F_RADIO_MAN)), FALSE);
-            EnableWindow(GetDlgItem(hwnd, fanId(i, F_RADIO_CRV)), FALSE);
-        }
-    }
 
     layout();
     trayAdd();

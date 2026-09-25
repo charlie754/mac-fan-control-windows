@@ -49,13 +49,38 @@ Controller::~Controller() { stop(); }
 
 bool Controller::start() {
     std::lock_guard<std::mutex> lk(mtx_);
+    attachLocked();                 // may fail; the worker keeps retrying
 
+    running_ = true;
+    setActiveController(this);
+    worker_ = std::thread(&Controller::workerLoop, this);
+    return true;                    // the app always starts, connected or not
+}
+
+// Opens the device and enumerates the hardware. Caller holds mtx_.
+// Returns false when the SMC is unreachable; the snapshot then carries the
+// reason so the UI can offer a specific next step.
+bool Controller::attachLocked() {
     if (!dev_.open()) {
+        const bool wasConnected = snap_.connected;
         snap_ = Snapshot{};
         snap_.connected = false;
+        snap_.statusCode = dev_.status();
         snap_.status = dev_.error();
+        if (wasConnected) {
+            // Lost an established connection: drop stale hardware state so we
+            // rediscover cleanly rather than driving fans we can no longer read.
+            fanset_ = fans::FanSet{};
+            tempKeys_.clear();
+            tempCache_.clear();
+            // cfg_ is deliberately kept so the user's modes and curves survive
+            // a reconnect; attachLocked() reuses it when the fan count matches.
+        }
         return false;
     }
+
+    snap_.statusCode = smc::Status::Connected;
+    snap_.status.clear();   // drop the reason left by an earlier failed attempt
 
     if (!fanset_.discover(dev_)) {
         snap_.connected = true;
@@ -76,15 +101,20 @@ bool Controller::start() {
     std::sort(tempKeys_.begin(), tempKeys_.end(),
               [](smc::Key a, smc::Key b) { return a.str() < b.str(); });
 
+    // Keep the user's settings across a reconnect when the hardware still
+    // looks the same; only fall back to defaults on a first or changed attach.
     const size_t n = fanset_.count();
-    cfg_.assign(n, FanConfig{});
+    if (cfg_.size() != n) {
+        cfg_.assign(n, FanConfig{});
+        for (size_t i = 0; i < n; ++i) {
+            const auto& f = fanset_.at(i);
+            cfg_[i].manualRpm = f.minRpm;
+            cfg_[i].curve = curve::Curve::defaultCurve(f.minRpm, f.maxRpm);
+        }
+    }
     smooth_.assign(n, curve::Smoother{});
     curveOut_.assign(n, 0.0);
-    for (size_t i = 0; i < n; ++i) {
-        const auto& f = fanset_.at(i);
-        cfg_[i].manualRpm = f.minRpm;
-        cfg_[i].curve = curve::Curve::defaultCurve(f.minRpm, f.maxRpm);
-    }
+    applyPendingLocked();   // settings loaded while we were still disconnected
 
     snap_.connected = true;
     snap_.controllable = fanset_.supportsControl();
@@ -99,10 +129,6 @@ bool Controller::start() {
     // shows real values instead of an empty list.
     pollOnce();
     rebuildSnapshot();
-
-    running_ = true;
-    setActiveController(this);
-    worker_ = std::thread(&Controller::workerLoop, this);
     return true;
 }
 
@@ -129,20 +155,34 @@ void Controller::workerLoop() {
         const double dt = std::chrono::duration<double>(now - last).count();
         last = now;
 
+        bool connected;
         {
             std::lock_guard<std::mutex> lk(mtx_);
-            if (reapply_.exchange(false)) {
-                for (auto& s : smooth_) s.reset();
+            if (!dev_.isOpen()) {
+                // Not connected: keep trying, so the app comes to life on its
+                // own the moment the driver becomes available. No restart.
+                attachLocked();
+            } else {
+                if (reapply_.exchange(false)) {
+                    for (auto& s : smooth_) s.reset();
+                }
+                pollOnce();
+                applyControl(dt);
+                rebuildSnapshot();
             }
-            pollOnce();
-            applyControl(dt);
-            rebuildSnapshot();
+            connected = dev_.isOpen();
         }
 
-        // 1.5 s keeps the UI lively without hammering the SMC, which is a slow
-        // microcontroller shared with the firmware's own thermal loop.
-        for (int i = 0; i < 15 && running_.load(); ++i)
+        // 1.5 s connected keeps the UI lively without hammering the SMC, which
+        // is a slow microcontroller shared with the firmware's own thermal
+        // loop. 3 s while retrying: nobody fixes a driver in under a second,
+        // and a tight loop on CreateFile is wasteful.
+        const int ticks = connected ? 15 : 30;
+        for (int i = 0; i < ticks && running_.load(); ++i) {
+            if (retryNow_.load()) break;      // user pressed "Try again"
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        retryNow_.store(false);
     }
 }
 
@@ -302,6 +342,20 @@ void Controller::setCurveSensor(size_t i, const std::string& key) {
 
 void Controller::reapplyAfterResume() { reapply_ = true; }
 
+// Applies settings held by applyConfigs() once the fans are known. Caller
+// holds mtx_. A no-op until both the settings and the hardware exist.
+void Controller::applyPendingLocked() {
+    if (pending_.empty() || cfg_.empty()) return;
+    for (size_t i = 0; i < cfg_.size() && i < pending_.size(); ++i) {
+        cfg_[i] = pending_[i];
+        cfg_[i].curve.sort();
+        if (cfg_[i].curve.points.empty())
+            cfg_[i].curve = curve::Curve::defaultCurve(fanset_.at(i).minRpm, fanset_.at(i).maxRpm);
+        smooth_[i].reset();
+    }
+    pending_.clear();
+}
+
 std::vector<std::pair<std::string, std::wstring>> Controller::temperatureChoices() const {
     std::lock_guard<std::mutex> lk(mtx_);
     std::vector<std::pair<std::string, std::wstring>> out;
@@ -314,13 +368,11 @@ std::vector<std::pair<std::string, std::wstring>> Controller::temperatureChoices
 
 void Controller::applyConfigs(const std::vector<FanConfig>& c) {
     std::lock_guard<std::mutex> lk(mtx_);
-    for (size_t i = 0; i < cfg_.size() && i < c.size(); ++i) {
-        cfg_[i] = c[i];
-        cfg_[i].curve.sort();
-        if (cfg_[i].curve.points.empty())
-            cfg_[i].curve = curve::Curve::defaultCurve(fanset_.at(i).minRpm, fanset_.at(i).maxRpm);
-        smooth_[i].reset();
-    }
+    // The app can now start before the SMC is reachable, in which case the fan
+    // count is not known yet. Hold the saved settings until it is, otherwise
+    // they would be silently replaced by defaults on the first connect.
+    pending_ = c;
+    applyPendingLocked();
     // Publish immediately: the GUI builds its controls from the snapshot right
     // after loading settings, before the worker has ticked.
     rebuildSnapshot();
