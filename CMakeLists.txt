@@ -22,6 +22,7 @@ add_executable(MacFanCtl WIN32
   ${CORE_SOURCES}
   src/curvectrl.cpp
   src/kofibtn.cpp
+  src/startup.cpp
   src/gui.cpp
   resources/app.rc
 )

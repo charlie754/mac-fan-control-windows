@@ -27,6 +27,11 @@ running Windows 10 x64.
     dragging points on the graph. Follows either a specific sensor or whichever
     component is currently hottest.
 - **Tray icon** with live temperature and fan speeds; the window closes to tray.
+- **Run on startup** (optional) — starts quietly in the tray when you sign in,
+  so your fan settings apply without opening anything.
+- **Never a dead end** — if the fans can't be reached, the window still opens,
+  says why in plain language with a next step, and connects by itself once the
+  problem is fixed.
 - **Settings persist** to `%APPDATA%\MacFanCtl\config.ini`.
 - **CLI** (`macfanctl-cli.exe`) for scripting and diagnostics.
 
@@ -68,8 +73,10 @@ a driver of its own. Check it with:
 sc query AppleSMC
 ```
 
-You want `STATE: 4 RUNNING`. If the service is stopped, MacFanCtl attempts to
-start it on launch (that step needs Administrator).
+You want `STATE: 4 RUNNING`. If the service is stopped, MacFanCtl tries to
+start it. That needs Administrator, so when it can't, the window says so and
+offers a **Fix this for me** button that restarts MacFanCtl through the normal
+Windows permission prompt.
 
 > **The device allows one handle at a time.** Only one program can hold the SMC
 > device at once, so close any other SMC utility -- tray icon included -- before
@@ -108,7 +115,22 @@ The left pane lists sensors, hottest first. Each fan gets its own panel:
 The red dot on the graph is where the fan is actually operating right now, so
 you can see the curve's effect and the fan's lag.
 
-Right-click the tray icon for **Return all fans to system control** and **Exit**.
+Right-click the tray icon for **Return all fans to system control**,
+**Run on startup** and **Exit**.
+
+### Run on startup
+
+Tick **Run on startup** at the bottom of the window (or in the tray menu) and
+MacFanCtl starts in the tray each time you sign in to Windows, applying your
+saved fan settings without opening its window. If it still can't reach the
+fans 30 seconds after starting, it opens the window to show why.
+
+It is an ordinary per-user startup entry
+(`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `MacFanCtl`), so it
+needs no Administrator and appears in Task Manager's **Startup** tab, which can
+also switch it off — the checkbox follows either way. The entry follows the
+copy you run: move the exe or unzip a newer version elsewhere, run it once, and
+sign-in starts that copy. Untick it before deleting MacFanCtl.
 
 ---
 
@@ -219,6 +241,7 @@ src/fans.{h,cpp}        Fan discovery and control (FS! / F<N>Md)
 src/curve.h             Curve evaluation, smoothing and rate limiting
 src/controller.{h,cpp}  Polling thread, control policy, restore-on-exit
 src/config.{h,cpp}      Settings persistence
+src/startup.{h,cpp}     Run on startup (HKCU Run entry)
 src/curvectrl.{h,cpp}   The draggable curve graph control
 src/gui.cpp             Main window, fan panels, tray icon
 src/cli.cpp             Command line front end

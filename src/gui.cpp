@@ -16,6 +16,7 @@
 #include "config.h"
 #include "curvectrl.h"
 #include "kofibtn.h"
+#include "startup.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -29,6 +30,7 @@ using namespace app;
 constexpr int IDC_LIST      = 1000;
 constexpr int IDC_STATUS    = 1001;
 constexpr int IDC_KOFI      = 1002;
+constexpr int IDC_STARTUP   = 1003;   // "Run on startup" checkbox
 
 // "Not connected" notice, shown instead of the sensor list and fan panels.
 constexpr int IDC_NC_TITLE  = 1010;
@@ -55,8 +57,13 @@ constexpr UINT WM_TRAY      = WM_APP + 1;
 constexpr int  IDM_SHOW     = 40001;
 constexpr int  IDM_ALLAUTO  = 40002;
 constexpr int  IDM_EXIT     = 40003;
+constexpr int  IDM_STARTUP  = 40004;
 constexpr int  IDT_POLL     = 1;
 constexpr int  IDT_RETRY_LABEL = 2;
+
+// How long a launch at sign-in may stay hidden in the tray without reaching
+// the fans before the window opens to say why.
+constexpr ULONGLONG kQuietStartGraceMs = 30000;
 
 // ---- app state ------------------------------------------------------------
 
@@ -68,6 +75,7 @@ struct Ui {
     HWND      list = nullptr;
     HWND      status = nullptr;
     HWND      kofi = nullptr;
+    HWND      startup = nullptr;
     HFONT     font = nullptr;
     HFONT     fontBig = nullptr;
     HFONT     fontBold = nullptr;
@@ -80,6 +88,9 @@ struct Ui {
     bool      quitting = false;
     bool      panelsBuilt = false;   // fan panels are built on first connect
     bool      showingNotice = false;
+    bool      quietStart = false;    // launched at sign-in: stay in the tray
+    ULONGLONG startedAt = 0;         // GetTickCount64() when the window was set up
+    UINT      taskbarCreated = 0;    // broadcast when Explorer (re)starts
     HANDLE    instanceMutex = nullptr;
     std::vector<std::pair<std::string, std::wstring>> tempChoices;
 };
@@ -155,8 +166,11 @@ void trayAdd() {
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(nid.szTip, L"MacFanCtl");
-    Shell_NotifyIconW(NIM_ADD, &nid);
-    g.inTray = true;
+    // Right after sign-in the shell may still be starting: NIM_ADD can fail,
+    // or time out even though the icon went in, which NIM_MODIFY confirms.
+    // The poll timer retries until the icon is there, because after a quiet
+    // start it is the only way into the app.
+    g.inTray = Shell_NotifyIconW(NIM_ADD, &nid) || Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 void trayRemove() {
@@ -183,6 +197,35 @@ void trayUpdateTip() {
     if (tip.size() > 127) tip.resize(127);
     wcscpy_s(nid.szTip, tip.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+// ---- run on startup -------------------------------------------------------
+
+// The registry is the source of truth: Task Manager's Startup tab can switch
+// the entry off while the app is running.
+void syncStartupCheck() {
+    if (g.startup)
+        Button_SetCheck(g.startup, startup::isEnabled() ? BST_CHECKED : BST_UNCHECKED);
+}
+
+void setRunOnStartup(bool on) {
+    if (!startup::setEnabled(on)) {
+        MessageBoxW(g.main,
+                    on ? L"MacFanCtl couldn't add itself to your startup apps."
+                       : L"MacFanCtl couldn't remove itself from your startup apps.",
+                    L"Run on startup", MB_ICONWARNING | MB_OK);
+    }
+    syncStartupCheck();
+}
+
+bool launchedWith(const wchar_t* sw) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+    bool found = false;
+    for (int i = 1; i < argc && !found; ++i) found = _wcsicmp(argv[i], sw) == 0;
+    LocalFree(argv);
+    return found;
 }
 
 // ---- "not connected" notice ----------------------------------------------
@@ -239,6 +282,7 @@ constexpr int kMargin = 10;
 constexpr int kStatusH = 54;
 constexpr int kKofiW  = 270;
 constexpr int kKofiH  = 48;
+constexpr int kStartupW = 130;
 
 void layout() {
     RECT rc;
@@ -249,9 +293,14 @@ void layout() {
     const int listW = S(kListW);
     const int kofiW = S(kKofiW);
     const int kofiH = S(kKofiH);
+    const int chkW = S(kStartupW);
+    const int rowY = bodyH + (S(kStatusH) - S(24)) / 2;
 
+    // Bottom bar: status text | "Run on startup" | Ko-fi. It stays visible
+    // while the notice is up, so startup can be set before the first connect.
     MoveWindow(g.list, margin, margin, listW, bodyH - 2 * margin, TRUE);
-    MoveWindow(g.status, margin, bodyH + (S(kStatusH) - S(24)) / 2, W - kofiW - 3 * margin, S(24), TRUE);
+    MoveWindow(g.status, margin, rowY, W - kofiW - chkW - 5 * margin, S(24), TRUE);
+    if (g.startup) MoveWindow(g.startup, W - kofiW - chkW - 3 * margin, rowY, chkW, S(24), TRUE);
     if (g.kofi) MoveWindow(g.kofi, W - kofiW - margin, bodyH + (S(kStatusH) - kofiH) / 2, kofiW, kofiH, TRUE);
 
     if (g.showingNotice) {
@@ -429,6 +478,18 @@ void setNoticeVisible(bool show, smc::Status st) {
 void refresh() {
     if (!g.ctl) return;
     g.snap = g.ctl->snapshot();
+
+    // A launch at sign-in stays in the tray only while things work. If the fans
+    // still can't be reached after a grace period, open the window so the
+    // reason and its fix are on screen rather than failing silently.
+    if (g.quietStart) {
+        if (g.snap.connected) {
+            g.quietStart = false;
+        } else if (GetTickCount64() - g.startedAt > kQuietStartGraceMs) {
+            g.quietStart = false;
+            ShowWindow(g.main, SW_SHOW);
+        }
+    }
 
     if (!g.snap.connected) {
         // The controller keeps retrying on its own; just reflect the state.
@@ -643,6 +704,8 @@ void showTrayMenu() {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, IDM_SHOW, IsWindowVisible(g.main) ? L"Hide window" : L"Show window");
     AppendMenuW(m, MF_STRING, IDM_ALLAUTO, L"Return all fans to system control");
+    AppendMenuW(m, MF_STRING | (startup::isEnabled() ? MF_CHECKED : MF_UNCHECKED),
+                IDM_STARTUP, L"Run on startup");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"Exit");
     SetForegroundWindow(g.main);
@@ -653,6 +716,13 @@ void showTrayMenu() {
 // ---- window proc ----------------------------------------------------------
 
 LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (g.taskbarCreated && msg == g.taskbarCreated) {
+        // Explorer restarted and every tray icon went with it.
+        g.inTray = false;
+        trayAdd();
+        return 0;
+    }
+
     switch (msg) {
         case WM_CREATE: {
             g.main = hwnd;
@@ -681,6 +751,12 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_STATUS, g.inst, nullptr);
             setFont(g.status, g.font);
 
+            g.startup = CreateWindowExW(0, L"BUTTON", L"Run on startup",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_STARTUP, g.inst, nullptr);
+            setFont(g.startup, g.font);
+            syncStartupCheck();
+
             g.kofi = CreateWindowExW(0, ui::kKofiClass, L"",
                 WS_CHILD | WS_VISIBLE,
                 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_KOFI, g.inst, nullptr);
@@ -703,6 +779,11 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             layout();
             return 0;
 
+        case WM_ACTIVATE:
+            // Picks up a change made in Task Manager's Startup tab meanwhile.
+            if (LOWORD(wp) != WA_INACTIVE) syncStartupCheck();
+            break;
+
         case WM_GETMINMAXINFO: {
             auto* mmi = (MINMAXINFO*)lp;
             mmi->ptMinTrackSize.x = S(900);
@@ -716,6 +797,7 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             rebuildFonts();
             setFont(g.list, g.font);
             setFont(g.status, g.font);
+            setFont(g.startup, g.font);
             for (size_t i = 0; i < g.fanCount; ++i) {
                 for (int c = F_GROUP; c <= F_SRC_COMBO; ++c)
                     if (HWND h = GetDlgItem(hwnd, fanId(i, (FanCtl)c)))
@@ -739,7 +821,10 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_TIMER:
-            if (wp == IDT_POLL) refresh();
+            if (wp == IDT_POLL) {
+                if (!g.inTray) trayAdd();
+                refresh();
+            }
             if (wp == IDT_RETRY_LABEL) {
                 KillTimer(hwnd, IDT_RETRY_LABEL);
                 SetDlgItemTextW(hwnd, IDC_NC_RETRY, L"Try again now");
@@ -783,6 +868,12 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == IDM_ALLAUTO) { allSystem(); return 0; }
+            if (id == IDM_STARTUP) { setRunOnStartup(!startup::isEnabled()); return 0; }
+            if (id == IDC_STARTUP) {
+                if (notify == BN_CLICKED)
+                    setRunOnStartup(Button_GetCheck(g.startup) == BST_CHECKED);
+                return 0;
+            }
             if (id == IDC_NC_FIX)   { onFixClicked(); return 0; }
             if (id == IDC_NC_RETRY) {
                 SetDlgItemTextW(hwnd, IDC_NC_RETRY, L"Checking…");
@@ -852,6 +943,7 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS*) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     g.inst = inst;
+    g.quietStart = launchedWith(startup::kSwitch);   // run by the startup entry
 
     // The applesmc driver hands out one device handle at a time, so a second
     // copy of the app could never connect. Surface that clearly rather than
@@ -862,12 +954,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     // ERROR_ACCESS_DENIED: a copy restarted as administrator by "Fix this for
     // me" owns the mutex and we may not open it. That copy is still running.
     if ((once && onceErr == ERROR_ALREADY_EXISTS) || (!once && onceErr == ERROR_ACCESS_DENIED)) {
-        if (HWND prev = FindWindowW(L"MacFanCtlMain", nullptr)) {
-            ShowWindow(prev, SW_SHOW);
-            SetForegroundWindow(prev);
+        // Someone opening the app wants to see it; the startup entry doesn't.
+        if (!g.quietStart) {
+            if (HWND prev = FindWindowW(L"MacFanCtlMain", nullptr)) {
+                ShowWindow(prev, SW_SHOW);
+                SetForegroundWindow(prev);
+            }
         }
         return 0;
     }
+
+    // If Run on startup is on but was set up from a copy that has since been
+    // moved or replaced by a newer version, sign-in should run this one.
+    startup::pointAtThisCopy();
 
     INITCOMMONCONTROLSEX icc{sizeof icc, ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES |
                                          ICC_STANDARD_CLASSES};
@@ -890,10 +989,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     wc.lpszClassName = L"MacFanCtlMain";
     RegisterClassExW(&wc);
 
+    g.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"MacFanCtl — Mac fan & temperature control",
                                 WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                 S(1080), S(780), nullptr, nullptr, inst, nullptr);
     if (!hwnd) return 1;
+
+    // Explorer runs unelevated; without this, a copy restarted as administrator
+    // by "Fix this for me" would never hear that the taskbar came back.
+    if (g.taskbarCreated) ChangeWindowMessageFilterEx(hwnd, g.taskbarCreated, MSGFLT_ALLOW, nullptr);
 
     Controller ctl;
     g.ctl = &ctl;
@@ -908,7 +1013,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
 
     layout();
     trayAdd();
-    ShowWindow(hwnd, SW_SHOW);
+    // Launched at sign-in: stay in the tray. refresh() opens the window after
+    // kQuietStartGraceMs if the fans still can't be reached.
+    g.startedAt = GetTickCount64();
+    if (!g.quietStart) ShowWindow(hwnd, SW_SHOW);
     SetTimer(hwnd, IDT_POLL, 1000, nullptr);
     refresh();
 
