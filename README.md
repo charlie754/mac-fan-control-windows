@@ -138,10 +138,12 @@ Under the sensor list (and under the buttons when MacFanCtl can't reach the
 fans) is a small banner for GOAT Cam, an iPhone app that makes your iPhone a
 webcam for Windows 11. Hovering it plays a short animation. Clicking it, or
 pressing Enter or Space when it has keyboard focus, opens
-https://goatcam.dagoat.io; the QR code opens the app on the App Store. The
-animation only runs while something on the banner is moving and stops
-completely at rest. With Windows' animation effects turned off, only its fades
-remain. The photo and the QR code are built into the exe, so nothing is downloaded.
+https://goatcam.dagoat.io; the QR code opens the app on the App Store, and
+pointing at it (or giving the banner keyboard focus) enlarges it so a phone can
+scan it easily. The animation only runs while something on the banner is moving
+and stops completely at rest. With Windows' animation effects turned off, only
+its fades remain and the QR code enlarges instantly. The photo and the QR code
+are built into the exe, so nothing is downloaded.
 
 ---
 

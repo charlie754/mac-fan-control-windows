@@ -3,8 +3,8 @@
 // Embed the side-by-side manifest (RT_MANIFEST = 24, CREATEPROCESS_MANIFEST_RESOURCE_ID = 1)
 1 24 "app.manifest"
 
-// GOAT Cam banner photo (src/goatcambanner.cpp loads it by this name). The coffee-tight box,
-// (0,500)-(440,870) of the GOAT Cam site's hero-coffee-1600.jpg - CC0, Alex Knight.
+// GOAT Cam banner photo (src/goatcambanner.cpp loads it by this name): the GOAT Cam site's
+// hero-coffee-800.jpg, unmodified - CC0, Alex Knight.
 GOATCAM_COFFEE RCDATA "goatcam-coffee.jpg"
 
 VS_VERSION_INFO VERSIONINFO
