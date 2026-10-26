@@ -872,10 +872,15 @@ bool loadPhotoBytes(const void* data, DWORD size) {
             const INT w = static_cast<INT>(src.GetWidth()), h = static_cast<INT>(src.GetHeight());
             std::unique_ptr<gp::Bitmap> copy(new gp::Bitmap(w, h, PixelFormat32bppPARGB));
             if (copy && copy->GetLastStatus() == gp::Ok) {   // GdipAlloc can return null
-                gp::Graphics g(copy.get());
-                g.DrawImage(&src, 0, 0, w, h);
-                g_photo = copy.release();
-                ok = true;
+                bool drawn = false;
+                {
+                    gp::Graphics g(copy.get());
+                    drawn = g.GetLastStatus() == gp::Ok && g.DrawImage(&src, 0, 0, w, h) == gp::Ok;
+                }   // the Graphics is released before the bitmap is published
+                if (drawn) {   // a failed draw leaves g_photo null: the plate draws without a photo
+                    g_photo = copy.release();
+                    ok = true;
+                }
             }
         }
     }
