@@ -132,6 +132,17 @@ also switch it off — the checkbox follows either way. The entry follows the
 copy you run: move the exe or unzip a newer version elsewhere, run it once, and
 sign-in starts that copy. Untick it before deleting MacFanCtl.
 
+### GOAT Cam banner
+
+Under the sensor list (and under the buttons when MacFanCtl can't reach the
+fans) is a small banner for GOAT Cam, an iPhone app that makes your iPhone a
+webcam for Windows 11. Hovering it plays a short animation. Clicking it, or
+pressing Enter or Space when it has keyboard focus, opens
+https://goatcam.dagoat.io; the QR code opens the app on the App Store. The
+animation only runs while something on the banner is moving and stops
+completely at rest. With Windows' animation effects turned off, only its fades
+remain. The photo and the QR code are built into the exe, so nothing is downloaded.
+
 ---
 
 ## Using the CLI
@@ -232,6 +243,13 @@ fan control logic.
 closed-source products; just keep the copyright notice. No warranty: this
 software writes to a hardware fan controller, and you run it at your own risk.
 
+The coffee photo in the GOAT Cam banner is "White cup and MacBook" by
+[Alex Knight](https://unsplash.com/@agkdesign)
+([source](https://unsplash.com/photos/j4uuKnN43_M)), released under
+[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) and cropped and
+colour-graded for the banner. CC0 does not require attribution; he is credited
+anyway, with thanks.
+
 ## Layout
 
 ```
@@ -243,6 +261,7 @@ src/controller.{h,cpp}  Polling thread, control policy, restore-on-exit
 src/config.{h,cpp}      Settings persistence
 src/startup.{h,cpp}     Run on startup (HKCU Run entry)
 src/curvectrl.{h,cpp}   The draggable curve graph control
+src/goatcambanner.{h,cpp} The GOAT Cam banner control (photo: resources/goatcam-coffee.jpg)
 src/gui.cpp             Main window, fan panels, tray icon
 src/cli.cpp             Command line front end
 tools/probe.cpp         Protocol validation harness

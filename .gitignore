@@ -38,3 +38,6 @@ config.ini
 *.user
 Thumbs.db
 desktop.ini
+
+# Local MSVC/Ninja build trees (build-msvc, ...)
+build-*/

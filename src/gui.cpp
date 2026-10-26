@@ -15,6 +15,7 @@
 #include "controller.h"
 #include "config.h"
 #include "curvectrl.h"
+#include "goatcambanner.h"
 #include "kofibtn.h"
 #include "startup.h"
 
@@ -31,6 +32,7 @@ constexpr int IDC_LIST      = 1000;
 constexpr int IDC_STATUS    = 1001;
 constexpr int IDC_KOFI      = 1002;
 constexpr int IDC_STARTUP   = 1003;   // "Run on startup" checkbox
+constexpr int IDC_GOATCAM   = 1004;   // GOAT Cam banner
 
 // "Not connected" notice, shown instead of the sensor list and fan panels.
 constexpr int IDC_NC_TITLE  = 1010;
@@ -75,6 +77,7 @@ struct Ui {
     HWND      list = nullptr;
     HWND      status = nullptr;
     HWND      kofi = nullptr;
+    HWND      goatcam = nullptr;
     HWND      startup = nullptr;
     HFONT     font = nullptr;
     HFONT     fontBig = nullptr;
@@ -296,9 +299,16 @@ void layout() {
     const int chkW = S(kStartupW);
     const int rowY = bodyH + (S(kStatusH) - S(24)) / 2;
 
+    // The GOAT Cam banner is as wide as the sensor list and sits under it; the
+    // list gives up that height. On the notice screen it goes under the buttons.
+    const SIZE gc = ui::goatCamPreferredSize(g.dpi);
+    const int gcW = (int)gc.cx, gcH = (int)gc.cy;
+    const int gcGap = S(8);
+    const int listH = bodyH - 2 * margin - gcH - gcGap;
+
     // Bottom bar: status text | "Run on startup" | Ko-fi. It stays visible
     // while the notice is up, so startup can be set before the first connect.
-    MoveWindow(g.list, margin, margin, listW, bodyH - 2 * margin, TRUE);
+    MoveWindow(g.list, margin, margin, listW, listH, TRUE);
     MoveWindow(g.status, margin, rowY, W - kofiW - chkW - 5 * margin, S(24), TRUE);
     if (g.startup) MoveWindow(g.startup, W - kofiW - chkW - 3 * margin, rowY, chkW, S(24), TRUE);
     if (g.kofi) MoveWindow(g.kofi, W - kofiW - margin, bodyH + (S(kStatusH) - kofiH) / 2, kofiW, kofiH, TRUE);
@@ -308,7 +318,8 @@ void layout() {
         const int w  = std::min(W - 4 * margin, S(620));
         const int x  = (W - w) / 2;
         const int bh = S(34);
-        int y = std::max(margin, (bodyH - S(300)) / 2);
+        const int gcAbove = S(24);   // buttons -> banner
+        int y = std::max(margin, (bodyH - S(300) - gcAbove - gcH) / 2);
         auto mv = [&](int id, int h, int cx = -1, int cw = -1) {
             if (HWND c = GetDlgItem(g.main, id))
                 MoveWindow(c, cx < 0 ? x : cx, y, cw < 0 ? w : cw, h, TRUE);
@@ -323,9 +334,11 @@ void layout() {
             MoveWindow(fix, x, y, bw, bh, TRUE);
         if (HWND rty = GetDlgItem(g.main, IDC_NC_RETRY))
             MoveWindow(rty, x + bw + gap, y, S(130), bh, TRUE);
+        if (g.goatcam) MoveWindow(g.goatcam, x, y + bh + gcAbove, gcW, gcH, TRUE);
         return;
     }
 
+    if (g.goatcam) MoveWindow(g.goatcam, margin, margin + listH + gcGap, gcW, gcH, TRUE);
     if (g.fanCount == 0) return;
     const int fx = margin * 2 + listW;
     const int fw = W - fx - margin;
@@ -761,6 +774,11 @@ LRESULT CALLBACK mainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 WS_CHILD | WS_VISIBLE,
                 0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_KOFI, g.inst, nullptr);
 
+            g.goatcam = CreateWindowExW(0, ui::kGoatCamClass,
+                L"GOAT Cam — open goatcam.dagoat.io",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)IDC_GOATCAM, g.inst, nullptr);
+
             // "Not connected" notice: created hidden, shown only when needed.
             auto nc = [&](int id, const wchar_t* cls, DWORD style, HFONT f) {
                 HWND c = CreateWindowExW(0, cls, L"", WS_CHILD | style,
@@ -978,6 +996,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
 
     ui::registerCurveClass(inst);
     ui::registerKofiClass(inst);
+    ui::registerGoatCamClass(inst);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof wc;
