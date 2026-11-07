@@ -25,11 +25,18 @@ set(CORE_SOURCES
   src/config.cpp
 )
 
+set(BANNER_SOURCES
+  src/online_banner.cpp
+  src/online_banner_machine.cpp
+  src/online_banner_client.cpp
+)
+
 # --- GUI application --------------------------------------------------------
 
 enable_language(RC)
 add_executable(MacFanCtl WIN32
   ${CORE_SOURCES}
+  ${BANNER_SOURCES}
   src/curvectrl.cpp
   src/kofibtn.cpp
   src/goatcambanner.cpp
@@ -39,7 +46,8 @@ add_executable(MacFanCtl WIN32
 )
 target_include_directories(MacFanCtl PRIVATE src)
 target_compile_definitions(MacFanCtl PRIVATE UNICODE _UNICODE)
-target_link_libraries(MacFanCtl PRIVATE comctl32 shell32 advapi32 gdi32 user32 ole32 gdiplus)
+target_link_libraries(MacFanCtl PRIVATE comctl32 shell32 advapi32 gdi32 user32 ole32 gdiplus
+  winhttp bcrypt windowscodecs)
 
 if(MINGW)
   # -municode selects the wWinMain-aware crt0; without it the linker looks for WinMain.
@@ -57,3 +65,18 @@ target_link_libraries(macfanctl-cli PRIVATE advapi32 shell32 ole32)
 if(MINGW)
   target_link_options(macfanctl-cli PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
+
+# --- online banner console tests -------------------------------------------
+
+add_executable(macfanctl-banner-tests tests/banner_tests.cpp ${BANNER_SOURCES})
+target_include_directories(macfanctl-banner-tests PRIVATE src)
+target_compile_definitions(macfanctl-banner-tests PRIVATE UNICODE _UNICODE)
+target_link_libraries(macfanctl-banner-tests PRIVATE bcrypt winhttp ole32 user32 windowscodecs)
+
+add_executable(macfanctl-banner-client-tests
+  tests/banner_client_tests.cpp
+  ${BANNER_SOURCES}
+)
+target_include_directories(macfanctl-banner-client-tests PRIVATE src)
+target_compile_definitions(macfanctl-banner-client-tests PRIVATE UNICODE _UNICODE)
+target_link_libraries(macfanctl-banner-client-tests PRIVATE bcrypt winhttp ole32 user32 windowscodecs)
