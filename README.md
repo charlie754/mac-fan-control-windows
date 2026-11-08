@@ -132,18 +132,26 @@ also switch it off — the checkbox follows either way. The entry follows the
 copy you run: move the exe or unzip a newer version elsewhere, run it once, and
 sign-in starts that copy. Untick it before deleting MacFanCtl.
 
-### GOAT Cam banner
+### Promo banner
 
 Under the sensor list (and under the buttons when MacFanCtl can't reach the
-fans) is a small banner for GOAT Cam, an iPhone app that makes your iPhone a
-webcam for Windows 11. Hovering it plays a short animation. Clicking it, or
-pressing Enter or Space when it has keyboard focus, opens
-https://goatcam.dagoat.io; the QR code opens the app on the App Store, and
-pointing at it (or giving the banner keyboard focus) enlarges it so a phone can
-scan it easily. The animation only runs while something on the banner is moving
-and stops completely at rest. With Windows' animation effects turned off, only
-its fades remain and the QR code enlarges instantly. The photo and the QR code
-are built into the exe, so nothing is downloaded.
+fans) is a small promo banner. Offline, or until a valid online banner has been
+downloaded, it shows the built-in Goat Project banner, which opens
+https://dagoat.io. When a valid signed banner is available it shows that instead
+(today: GOAT Cam, an iPhone app that makes your iPhone a webcam for Windows 11);
+clicking it opens exactly the link inside the signed file, and its QR code is
+the App Store route. Clicking, or pressing Enter or Space when the banner has
+keyboard focus, opens the link in your default browser. Pointing at the banner
+plays a short animation that only runs while something is moving.
+
+**Privacy.** The banner may download one signed public file and one image from
+goatcam.dagoat.io over HTTPS, at most every 6 hours and only while the
+MacFanCtl window is shown (never while it is minimised or in the tray). The
+request carries your IP address and a user agent naming the app and its
+version, `MacFanCtl/<version>`; nothing else is sent — no identifier, cookie,
+query string or usage data. The file is checked against a signature built into
+the exe before anything from it is shown, and is cached in
+`%LOCALAPPDATA%\MacFanCtl\banner`.
 
 ---
 
@@ -263,7 +271,8 @@ src/controller.{h,cpp}  Polling thread, control policy, restore-on-exit
 src/config.{h,cpp}      Settings persistence
 src/startup.{h,cpp}     Run on startup (HKCU Run entry)
 src/curvectrl.{h,cpp}   The draggable curve graph control
-src/goatcambanner.{h,cpp} The GOAT Cam banner control (photo: resources/goatcam-coffee.jpg)
+src/goatcambanner.{h,cpp} The promo banner control (built-in DaGoat banner, signed online banner)
+src/online_banner*.{h,cpp} Shared signed-banner checker, state machine and HTTPS client
 src/gui.cpp             Main window, fan panels, tray icon
 src/cli.cpp             Command line front end
 tools/probe.cpp         Protocol validation harness

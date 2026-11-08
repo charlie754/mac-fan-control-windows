@@ -76,7 +76,10 @@ target_link_libraries(macfanctl-banner-tests PRIVATE bcrypt winhttp ole32 user32
 add_executable(macfanctl-banner-client-tests
   tests/banner_client_tests.cpp
   ${BANNER_SOURCES}
+  src/goatcambanner.cpp
+  resources/app.rc
 )
 target_include_directories(macfanctl-banner-client-tests PRIVATE src)
 target_compile_definitions(macfanctl-banner-client-tests PRIVATE UNICODE _UNICODE)
-target_link_libraries(macfanctl-banner-client-tests PRIVATE bcrypt winhttp ole32 user32 windowscodecs)
+target_link_libraries(macfanctl-banner-client-tests PRIVATE bcrypt winhttp ole32 user32 windowscodecs
+  gdiplus comctl32 shell32 msimg32 gdi32 shlwapi)

@@ -1,15 +1,15 @@
 #include <windows.h>
+#include "..\src\version.h"
 
 // Embed the side-by-side manifest (RT_MANIFEST = 24, CREATEPROCESS_MANIFEST_RESOURCE_ID = 1)
 1 24 "app.manifest"
 
-// GOAT Cam banner photo (src/goatcambanner.cpp loads it by this name): the GOAT Cam site's
-// hero-coffee-800.jpg, unmodified - CC0, Alex Knight.
-GOATCAM_COFFEE RCDATA "goatcam-coffee.jpg"
+// The built-in online model's iPhone mockup.
+GOATCAM_IPHONE RCDATA "goatcam-iphone.png"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,2,0,0
-PRODUCTVERSION  1,2,0,0
+FILEVERSION     MACFANCTL_VERSION_MAJOR,MACFANCTL_VERSION_MINOR,MACFANCTL_VERSION_PATCH,0
+PRODUCTVERSION  MACFANCTL_VERSION_MAJOR,MACFANCTL_VERSION_MINOR,MACFANCTL_VERSION_PATCH,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -21,11 +21,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "MacFanCtl - Mac fan and temperature control"
-            VALUE "FileVersion",     "1.2.0.0"
+            VALUE "FileVersion",     MACFANCTL_VERSION ".0"
             VALUE "InternalName",    "MacFanCtl"
             VALUE "OriginalFilename","MacFanCtl.exe"
             VALUE "ProductName",     "MacFanCtl"
-            VALUE "ProductVersion",  "1.2.0.0"
+            VALUE "ProductVersion",  MACFANCTL_VERSION ".0"
         END
     END
     BLOCK "VarFileInfo"
